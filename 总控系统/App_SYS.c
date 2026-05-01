@@ -84,9 +84,9 @@ void App_SYS_Init(void) {
     sys_ctrl.current_interval = 600000; // 默认空闲模式：10分钟
     //last_sample_tick设为 0 会导致上电后等待 10 分钟。应设为"过去的时间"以立即触发。
     sys_ctrl.last_sample_tick = HAL_GetTick() - sys_ctrl.current_interval;
-
-    printf("\r\n[App_SYS Initialized. Switch State: M:%d L:%d P:%d F:%d]\r\n", 
-           sys_ctrl.sw_master, sys_ctrl.sw_led, sys_ctrl.sw_pump, sys_ctrl.sw_fan);
+    printf("-------------------------------------------------------");
+    printf("\r\n[App_SYS Init]\r\n");
+		printf("[ALL:%d  LED:%d  PUMP:%d  FAN:%d]\r\n",sys_ctrl.sw_master, sys_ctrl.sw_led, sys_ctrl.sw_pump, sys_ctrl.sw_fan);
 }
 
 /**
@@ -117,7 +117,7 @@ void App_SYS_Loop(SHT40_t *sht) {
     }
 
 
-     /* 1.LED 控制逻辑 (只受master和LED开关限制)*/
+     // 1.LED 控制逻辑 (只受master和LED开关限制)
     if (sys_ctrl.sw_led) {
         sys_ctrl.out_led = 1;
     } else {
@@ -134,7 +134,14 @@ void App_SYS_Loop(SHT40_t *sht) {
     if (hour >= 10 && hour < 21) {
         allow_running = 1;
     } else {
-        SYS_Shutdown_All();
+				// 1. 独立清零水泵与风扇的逻辑状态，保障 LED 状态的延续性
+        sys_ctrl.out_pump = 0;
+        sys_ctrl.out_fan  = 0;
+        
+        // 2. 定向关断水泵(PB13)与风扇(PB14)的物理引脚
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13 | GPIO_PIN_14, GPIO_PIN_RESET);
+        
+        // 3. 截断主循环，屏蔽后续的环境检测与硬件响应逻辑
         return; // 时间不满足，强制关闭
     }
 
@@ -166,7 +173,7 @@ void App_SYS_Loop(SHT40_t *sht) {
                        sht->humidity, sys_ctrl.current_interval);
                        last_read_error = 0; // 读取成功，清除错误标记
                        error_count = 0;     // 清除连续错误计数
-                       App_Blink_SetFastMode(0);//PC13恢复正常慢闪
+                       App_Blink_SetFastMode(0);//PC13正常慢闪
             } else {
                 SYS_Print_Time();
                 printf("[App_SYS Sensor Read Error]\r\n");
@@ -174,7 +181,7 @@ void App_SYS_Loop(SHT40_t *sht) {
                 error_count++;
                 App_Blink_SetFastMode(1);//PC13报错快闪
 
-                printf("[App_SYS Emergency Stop]\r\n");
+                printf("\r\n[App_SYS Emergency Stop]\r\n");
                 HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13 | GPIO_PIN_14, GPIO_PIN_RESET);
                 sys_ctrl.out_pump = 0;
                 sys_ctrl.out_fan = 0;
@@ -182,7 +189,7 @@ void App_SYS_Loop(SHT40_t *sht) {
                 
                 if (error_count >= 10) {
                     SYS_Print_Time();
-                    printf("[App_SYS Sensor Failed 30s]\r\n");
+                    printf("\r\n[App_SYS Sensor Failed 30s]\r\n");
                     Error_Handler();
                 }
 
@@ -195,6 +202,7 @@ void App_SYS_Loop(SHT40_t *sht) {
 
         // --- 2. 水泵 ---
         if (sys_ctrl.sw_pump) {
+						// 开启阈值 = 下限
             if (sht->humidity < sht->humi_bot) {
                 sys_ctrl.out_pump = 1; // 湿度过低，开启加湿
             } 

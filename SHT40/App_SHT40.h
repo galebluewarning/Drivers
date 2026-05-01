@@ -1,3 +1,10 @@
+/**
+ * @file    App_SHT40.h
+ * @author  Gemini (Cortex-M3 Optimized)
+ * @brief   SHT40 温湿度传感器应用驱动 (软件模拟 I2C 版)
+ * @details 本模块实现了 SHT40 的数据采集、CRC 校验及基于 BKP 的阈值保存功能。
+ */
+
 #ifndef __APP_SHT40_H__
 #define __APP_SHT40_H__
 
@@ -6,83 +13,89 @@ extern "C" {
 #endif
 
 #include "main.h" 
-#include "i2c.h" 
+#include "App_Simu_I2C.h" // 必须包含底层模拟 I2C 驱动，以识别 Start/Stop/WaitAck 等函数
 
+/* ========================== SHT40 硬件地址定义 ========================== */
+/**
+ * @brief SHT40 7位从机地址 (标准为 0x44)
+ */
+#ifndef SHT40_ADDR_7BIT
+#define SHT40_ADDR_7BIT    0x44
+#endif
 
-/* SHT40 I2C Address (7-bit) */
-#define SHT40_I2C_ADDR (0x44 << 1) 
+/**
+ * @brief S2C 地址字节: 7位地址左移一位 + 读写位
+ */
+#ifndef SHT40_ADDR_W
+#define SHT40_ADDR_W       (SHT40_ADDR_7BIT << 1)       // 写地址: 0x88
+#endif
 
-/* Commands */
-#define SHT40_CMD_HIGH_PRECISION 0xFD
-#define SHT40_CMD_MED_PRECISION  0xF6
-#define SHT40_CMD_LOW_PRECISION  0xE0
-#define SHT40_CMD_SOFT_RESET     0x94
-/* 加热器命令 (200mW, 1秒) */
-/* SHT40 加热指令是 16位 的，需拆分发送 */
+#ifndef SHT40_ADDR_R
+#define SHT40_ADDR_R       ((SHT40_ADDR_7BIT << 1) | 0x01) // 读地址: 0x89
+#endif
+
+/* ========================== SHT40 控制指令定义 ========================== */
+#define SHT40_CMD_HIGH_PRECISION 0xFD  // 高精度测量指令 (约需 10ms 等待时间)
+#define SHT40_CMD_SOFT_RESET     0x94  // 传感器软件复位指令
+
+/**
+ * @brief SHT40 内置加热器指令 (200mW, 加热 1 秒)
+ */
 #define SHT40_CMD_HEATER_200MW_1S_MSB  0x39
 #define SHT40_CMD_HEATER_200MW_1S_LSB  0xC6
 
-/* Data Structure */
+/* ========================== 数据结构定义 ========================== */
+/**
+ * @brief SHT40 实例管理结构体
+ * 整合了实时采集数据与掉电保存的温湿度控制阈值
+ */
 typedef struct {
-    I2C_HandleTypeDef *i2cHandle; // 绑定的 I2C 句柄
-    float temperature;            // 温度值 (℃)
-    float humidity;               // 湿度值 (%RH)
-    /* 环境监控阈值变量 */
-    float temp_bot;  // 温度下限
-    float temp_top;  // 温度上限
-    float humi_bot;  // 湿度下限
-    float humi_top;  // 湿度上限
+    float temperature;            // 当前温度值 (℃)
+    float humidity;               // 当前相对湿度值 (%RH)
+    
+    /* 环境控制闭环阈值 */
+    float temp_bot;               // 温度下限
+    float temp_top;               // 温度上限
+    float humi_bot;               // 湿度下限 (用于控制加湿水泵)
+    float humi_top;               // 湿度上限 (用于控制除湿风扇)
 } SHT40_t;
 
-/* 函数原型声明 */
-/**
- * @brief 初始化 SHT40 设备结构体并设置默认阈值
- * @param dev       指向 SHT40 设备实例的指针，用于存储硬件句柄及环境参数
- * @param i2cHandle 指向 STM32 HAL 库定义的 I2C 总线句柄（如 &hi2c1）
- */
-void App_SHT40_Init(SHT40_t *dev, I2C_HandleTypeDef *i2cHandle);
+/* ========================== 函数原型声明 ========================== */
 
 /**
- * @brief 执行 SHT40 传感器的软件复位
- * @note  调用后会通过 I2C 发送 0x94 指令，并包含必要的延时（约 10ms）以等待传感器重启完成
- * @param dev       指向待复位的 SHT40 设备实例的指针
+ * @brief 初始化 SHT40 对象，加载 BKP 寄存器中的阈值
+ * @param dev 指向 SHT40 实例的指针
+ */
+void App_SHT40_Init(SHT40_t *dev);
+
+/**
+ * @brief 触发传感器软件复位逻辑
  */
 void App_SHT40_SoftReset(SHT40_t *dev);
 
 /**
- * @brief 读取当前温湿度数据（采用高精度测量模式）
- * @details 该函数执行以下流程：发送测量指令 -> 硬件延时 -> 读取 6 字节原始数据 -> CRC 校验 -> 物理量转换
- * @param dev       指向 SHT40 设备实例的指针，读取到的温度和湿度将更新至其成员变量中
- * @return HAL_StatusTypeDef 返回 HAL_OK 表示读取及 CRC 校验均成功，否则返回 HAL_ERROR
+ * @brief 读取一次温湿度数据 (包含 I2C 时序、等待、CRC 校验及物理量转换)
+ * @return HAL_StatusTypeDef 返回 HAL_OK 表示读取且校验成功
  */
 HAL_StatusTypeDef App_SHT40_ReadTempHum(SHT40_t *dev);
 
 /**
- * @brief 激活 SHT40 内置加热器 (去凝露模式)
- * @details 发送 200mW 加热 1秒 指令，并阻塞等待 1.1秒。
- * 用于在极端高湿环境下去除传感器表面的冷凝水。
- * @warning 加热后温度会短暂升高，湿度降低，建议配合 30秒 的数据冷却屏蔽期使用。
- * @param dev 指向 SHT40 设备实例的指针
- * @return HAL_StatusTypeDef 发送结果
+ * @brief 开启加热器去凝露 (阻塞 1.1s)
  */
 HAL_StatusTypeDef App_SHT40_ActivateHeater(SHT40_t *dev);
 
 /**
- * @brief 通过串口指令解析并设置阈值，支持写入 BKP 备份寄存器
-*/
+ * @brief 串口命令行解析，支持动态设置并保存阈值
+ */
 void App_SHT40_ParseCommand(SHT40_t *dev, char *cmd_line);
 
 /**
- * @brief  封装函数：读取并打印温湿度
- * @param  dev: 传感器结构体指针
+ * @brief 立即打印一次当前数据至串口
  */
 void App_SHT40_Print(SHT40_t *dev); 
 
 /**
- * @brief 周期性非阻塞读取并打印数据
- * @param dev         SHT40 设备实例指针
- * @param interval_ms 读取间隔 (毫秒)
- * @eg App_SHT40_NEWS(&sht40, 1000);
+ * @brief 非阻塞周期性读取打印函数，适用于 main loop
  */
 void App_SHT40_NEWS(SHT40_t *dev, uint32_t interval_ms);
 
